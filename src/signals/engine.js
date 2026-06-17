@@ -206,28 +206,34 @@ export function generateSignal(md, pair, timeframe) {
   const longScore  = longCore.filter(Boolean).length;
   const shortScore = shortCore.filter(Boolean).length;
 
-  // ── Determine direction ───────────────────────────────────────────────────
+  // ── Determine direction and confidence ───────────────────────────────────
+  // 4/4 factors → HIGH  (auto-post to VIP)
+  // 3/4 factors → MEDIUM (suggest to admin in DM)
+  // <3           → WAIT
 
-  const minCore = 4; // always require all 4 for HIGH confidence
   let direction = 'WAIT';
+  let confidence = 'LOW';
   let alignedLabels = [];
   let conflicting   = [];
+  let missingLabels = [];
 
-  if (longScore === 4 && longScore > shortScore) {
-    direction     = 'LONG';
-    alignedLabels = longLabels;
-    // Surface any bearish indicators as conflicts
-    if (macdBear)      conflicting.push('MACD histogram also shows recent bearish pressure');
-    if (!aboveEma200 && !isScalp)  conflicting.push('Price below EMA200 (caution)');
-    if (rsi != null && rsi > 68)   conflicting.push(`RSI approaching overbought (${round(rsi, 1)})`);
-  } else if (shortScore === 4 && shortScore > longScore) {
-    direction     = 'SHORT';
-    alignedLabels = shortLabels;
-    if (macdBull)      conflicting.push('MACD histogram also shows recent bullish pressure');
-    if (aboveEma200 && !isScalp)   conflicting.push('Price above EMA200 (caution — counter-trend)');
-    if (rsi != null && rsi < 32)   conflicting.push(`RSI approaching oversold (${round(rsi, 1)})`);
+  if (longScore >= 3 && longScore > shortScore) {
+    direction  = 'LONG';
+    confidence = longScore === 4 ? 'HIGH' : 'MEDIUM';
+    alignedLabels = longLabels.filter((_, i) => longCore[i]);
+    missingLabels = longLabels.filter((_, i) => !longCore[i]);
+    if (macdBear)     conflicting.push('MACD histogram also shows recent bearish pressure');
+    if (!aboveEma200 && !isScalp) conflicting.push('Price below EMA200 (caution)');
+    if (rsi != null && rsi > 68)  conflicting.push(`RSI approaching overbought (${round(rsi, 1)})`);
+  } else if (shortScore >= 3 && shortScore > longScore) {
+    direction  = 'SHORT';
+    confidence = shortScore === 4 ? 'HIGH' : 'MEDIUM';
+    alignedLabels = shortLabels.filter((_, i) => shortCore[i]);
+    missingLabels = shortLabels.filter((_, i) => !shortCore[i]);
+    if (macdBull)     conflicting.push('MACD histogram also shows recent bullish pressure');
+    if (aboveEma200 && !isScalp)  conflicting.push('Price above EMA200 (caution — counter-trend)');
+    if (rsi != null && rsi < 32)  conflicting.push(`RSI approaching oversold (${round(rsi, 1)})`);
   } else {
-    // Build conflict reasons
     if (macdBull && belowEma50)   conflicting.push('MACD bullish but price below EMA50');
     if (macdBear && aboveEma50)   conflicting.push('MACD bearish but price above EMA50');
     if (!isScalp && aboveEma50 && belowEma200) conflicting.push('Price above EMA50 but below EMA200 — consolidation zone');
@@ -285,7 +291,8 @@ export function generateSignal(md, pair, timeframe) {
     ? [macdDesc, ema50Desc, rsiDesc, momentumDesc]
     : [macdDesc, ema50Desc, ema200Desc, rsiDesc];
 
-  const reasoning = `${direction} — 4/4 factors aligned: ${reasonParts.filter(Boolean).join(', ')}. ATR(14): ${round(atr, 2)} → SL at ${round(slDist, dec)} ${long ? 'below' : 'above'} entry.`;
+  const factorCount = long ? longScore : shortScore;
+  const reasoning = `${direction} — ${factorCount}/4 factors aligned: ${reasonParts.filter(Boolean).join(', ')}. ATR(14): ${round(atr, 2)} → SL at ${round(slDist, dec)} ${long ? 'below' : 'above'} entry.`;
 
   // ── Macro block ───────────────────────────────────────────────────────────
   // No live macro from Twelve Data — fields set to UNAVAILABLE as reminder to check news.
@@ -323,7 +330,7 @@ export function generateSignal(md, pair, timeframe) {
     macro: macroBlock,
     signal: {
       direction,
-      confidence: 'HIGH',
+      confidence,
       timeframe,
       entry:       round(close, dec),
       stopLoss:    sl,
@@ -332,7 +339,7 @@ export function generateSignal(md, pair, timeframe) {
       takeProfit3: tp3,
       riskReward:  rrStr,
       reasoning,
-      entryLogic:  `Enter at market ${round(close, dec)}. All 4 factors aligned: ${alignedLabels.join(', ')}.`,
+      entryLogic:  `Enter at market ${round(close, dec)}. ${factorCount}/4 factors aligned: ${alignedLabels.join(', ')}.`,
       slLogic:     isScalp
         ? `SL = ${round(close, dec)} ${long ? '-' : '+'} ${slMult}×ATR(${round(atr, 2)}) = ${sl}.`
         : `SL = ${round(close, dec)} ${long ? '-' : '+'} ${slMult}×ATR(${round(atr, 2)}) or beyond ${long ? 'swing low' : 'swing high'} = ${sl}.`,
@@ -340,6 +347,7 @@ export function generateSignal(md, pair, timeframe) {
         ? `Scale out: TP1 at 0.5:1 R:R (${tp1}), TP2 at 1:1 (${tp2}), TP3 at 2:1 (${tp3}).`
         : `Scale out: TP1 at 1:1 R:R (${tp1}), TP2 at 2:1 (${tp2}), TP3 at 3:1 (${tp3}).`,
       conflictingFactors: conflicting,
+      missingFactors: missingLabels,
     },
     dataWarnings: buildWarnings(md),
   };

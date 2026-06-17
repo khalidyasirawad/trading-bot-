@@ -18,6 +18,7 @@ import { formatVipSignal, formatNoSignal, formatScanSummary, formatScalpScanSumm
 import { scanAllSignals, scanScalpSignals } from './signals/scanner.js';
 import { applyWatermark } from './signals/antiLeak.js';
 import { generateBacktestPost } from './content/backtestPost.js';
+import { startLiveMonitor } from './signals/liveMonitor.js';
 
 // ─── Validate required env vars ───────────────────────────────────────────────
 const REQUIRED_ENV = [
@@ -224,7 +225,11 @@ const scheduler = startScheduler(bot);
 
 // ─── Start bot ────────────────────────────────────────────────────────────────
 bot.start({
-  onStart: (info) => console.log(`[bot] @${info.username} is running`),
+  onStart: (info) => {
+    console.log(`[bot] @${info.username} is running`);
+    // Start 24/7 monitor after bot is confirmed running
+    startLiveMonitor(bot);
+  },
 });
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────

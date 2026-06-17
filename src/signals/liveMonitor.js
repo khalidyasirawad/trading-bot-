@@ -109,29 +109,38 @@ async function runOneCycle(bot) {
       const signalId = `sig_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
       const text = applyWatermark(formatVipSignal(result, signalId), `monitor_${signalId}`);
 
-      await bot.api.sendMessage(process.env.VIP_CHANNEL_ID, text, {
-        parse_mode: 'HTML',
-        protect_content: true,
-      });
+      try {
+        await bot.api.sendMessage(process.env.VIP_CHANNEL_ID, text, {
+          parse_mode: 'HTML',
+          protect_content: true,
+        });
+        console.log(`[monitor] HIGH signal posted → VIP: ${pair} ${timeframe} ${sig.direction} (${signalId})`);
+      } catch (err) {
+        console.error(`[monitor] Failed to post HIGH signal to VIP channel (${process.env.VIP_CHANNEL_ID}): ${err.message}`);
+      }
 
-      console.log(`[monitor] HIGH signal posted → VIP: ${pair} ${timeframe} ${sig.direction} (${signalId})`);
-
-      // Also notify admin
-      await bot.api.sendMessage(
-        process.env.ADMIN_TELEGRAM_ID,
-        `✅ <b>AUTO-POSTED to VIP</b>\n${pair} ${timeframe} · ${sig.direction} · HIGH\nEntry: ${Number(sig.entry).toFixed(dec)} | ID: <code>${signalId}</code>`,
-        { parse_mode: 'HTML' }
-      );
+      // Notify admin regardless of VIP post success
+      try {
+        await bot.api.sendMessage(
+          process.env.ADMIN_TELEGRAM_ID,
+          `🔥 <b>HIGH signal AUTO-POSTED to VIP</b>\n${pair} ${timeframe} · ${sig.direction}\nEntry: <code>${Number(sig.entry).toFixed(dec)}</code> | <code>${signalId}</code>`,
+          { parse_mode: 'HTML' }
+        );
+      } catch (err) {
+        console.error(`[monitor] Failed to notify admin (ID: ${process.env.ADMIN_TELEGRAM_ID}): ${err.message}`);
+      }
 
     } else if (sig.confidence === 'MEDIUM') {
-      // DM admin for review
-      await bot.api.sendMessage(
-        process.env.ADMIN_TELEGRAM_ID,
-        formatMediumAlert(result),
-        { parse_mode: 'HTML' }
-      );
-
-      console.log(`[monitor] MEDIUM signal → admin DM: ${pair} ${timeframe} ${sig.direction}`);
+      try {
+        await bot.api.sendMessage(
+          process.env.ADMIN_TELEGRAM_ID,
+          formatMediumAlert(result),
+          { parse_mode: 'HTML' }
+        );
+        console.log(`[monitor] MEDIUM signal → admin DM: ${pair} ${timeframe} ${sig.direction}`);
+      } catch (err) {
+        console.error(`[monitor] Failed to DM admin (ID: ${process.env.ADMIN_TELEGRAM_ID}): ${err.message}`);
+      }
     }
 
     await sleep(500); // small gap between Telegram sends

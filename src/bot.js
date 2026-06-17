@@ -46,6 +46,25 @@ function adminOnly(ctx, next) {
   return next();
 }
 
+// ─── /start ───────────────────────────────────────────────────────────────────
+
+bot.command('start', async (ctx) => {
+  if (isAdmin(ctx)) {
+    await ctx.reply(
+      `✅ <b>Bot is active</b> — your Telegram ID: <code>${ctx.from.id}</code>\n\n` +
+      `24/7 monitor is running. You'll receive MEDIUM signal alerts here and HIGH signals auto-post to VIP.\n\n` +
+      `Type /help for all commands.`,
+      { parse_mode: 'HTML' }
+    );
+  } else {
+    await ctx.reply(
+      `👋 This is a private trading signal bot.\n` +
+      `Your Telegram ID: <code>${ctx.from.id}</code>`,
+      { parse_mode: 'HTML' }
+    );
+  }
+});
+
 // ─── Admin commands ───────────────────────────────────────────────────────────
 
 /**

@@ -16,6 +16,7 @@ import { formatPublicSignal, formatVipSignal, formatVipTeaser, formatNoSignal } 
 import { applyWatermark } from './signals/antiLeak.js';
 import { generateNewsDigest } from './content/newsDigest.js';
 import { generatePromoPost } from './content/promoPost.js';
+import { generateBacktestPost } from './content/backtestPost.js';
 
 // ─── Jobs ─────────────────────────────────────────────────────────────────────
 
@@ -88,6 +89,17 @@ async function jobVipTeaser(bot) {
   }
 }
 
+async function jobBacktest(bot) {
+  console.log('[cron] Running: backtest post job');
+  try {
+    const text = await generateBacktestPost();
+    await bot.api.sendMessage(process.env.PUBLIC_CHANNEL_ID, text, { parse_mode: 'HTML' });
+    console.log('[cron] Backtest post published');
+  } catch (err) {
+    console.error('[cron] Backtest post failed:', err.message);
+  }
+}
+
 async function jobPromoPost(bot) {
   console.log('[cron] Running: promo post job');
   try {
@@ -116,9 +128,10 @@ export function startScheduler(bot) {
     cron.schedule('0 10 * * *',  () => jobVipSignal(bot),    { timezone: 'UTC' }),
     cron.schedule('0 8 * * 1,4', () => jobPublicSignal(bot), { timezone: 'UTC' }),
     cron.schedule('0 10 * * 2,5',() => jobPromoPost(bot),    { timezone: 'UTC' }),
+    cron.schedule('0 14 * * *',  () => jobBacktest(bot),     { timezone: 'UTC' }),
   ];
 
-  console.log('[scheduler] 5 signal jobs registered');
+  console.log('[scheduler] 6 signal jobs registered');
 
   return {
     stop: () => jobs.forEach(j => j.stop()),
@@ -126,5 +139,6 @@ export function startScheduler(bot) {
     runVipSignal:    () => jobVipSignal(bot),
     runNewsDigest:   () => jobNewsDigest(bot),
     runPromoPost:    () => jobPromoPost(bot),
+    runBacktest:     () => jobBacktest(bot),
   };
 }

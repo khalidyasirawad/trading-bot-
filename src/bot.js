@@ -17,6 +17,7 @@ import { fetchManualSignal, isActionableSignal, ALL_TFS, SCALP_TFS } from './sig
 import { formatVipSignal, formatNoSignal, formatScanSummary, formatScalpScanSummary } from './signals/formatter.js';
 import { scanAllSignals, scanScalpSignals } from './signals/scanner.js';
 import { applyWatermark } from './signals/antiLeak.js';
+import { generateBacktestPost } from './content/backtestPost.js';
 
 // ─── Validate required env vars ───────────────────────────────────────────────
 const REQUIRED_ENV = [
@@ -150,6 +151,28 @@ bot.command('scan', adminOnly, async (ctx) => {
   }
 });
 
+/**
+ * /backtest — run backtest on XAUUSD H1 + BTCUSD H1, post to public channel.
+ * /backtest nopost — preview result in admin DM only.
+ */
+bot.command('backtest', adminOnly, async (ctx) => {
+  const nopost = ctx.message?.text?.toLowerCase().includes('nopost') ?? false;
+  await ctx.reply('⏳ Running backtest on XAUUSD H1 + BTCUSD H1… (~30 seconds)');
+
+  try {
+    const text = await generateBacktestPost();
+
+    if (!nopost) {
+      await bot.api.sendMessage(process.env.PUBLIC_CHANNEL_ID, text, { parse_mode: 'HTML' });
+      await ctx.reply('✅ Backtest report posted to public channel.');
+    } else {
+      await ctx.reply(text, { parse_mode: 'HTML' });
+    }
+  } catch (err) {
+    await ctx.reply(`❌ Backtest failed: ${err.message}`);
+  }
+});
+
 /** /help */
 bot.command('help', adminOnly, async (ctx) => {
   await ctx.reply(
@@ -174,6 +197,10 @@ bot.command('help', adminOnly, async (ctx) => {
     `  <code>/signal XAUUSD M1</code> — 1-min gold scalp\n` +
     `  <code>/signal BTCUSD M10</code> — 10-min BTC scalp\n` +
     `  <code>/signal XAUUSD H4 force</code> — forced H4 swing\n\n` +
+
+    `<b>Backtest</b>\n` +
+    `/backtest — Run + post backtest report to public channel\n` +
+    `/backtest nopost — Preview backtest in this DM\n\n` +
 
     `/help — Show this list`,
     { parse_mode: 'HTML' }

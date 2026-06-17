@@ -72,9 +72,10 @@ function safeFloat(val) {
 
 // ─── Local indicator calculations ─────────────────────────────────────────────
 // All inputs are ordered oldest → newest.
+// Functions are exported so backtest.js can reuse them without extra API calls.
 
 // EMA series — returns array same length as input; pre-periods are null.
-function emaSeries(values, period) {
+export function emaSeries(values, period) {
   const out = new Array(values.length).fill(null);
   if (values.length < period) return out;
   let sum = 0;
@@ -87,13 +88,13 @@ function emaSeries(values, period) {
   return out;
 }
 
-function latestEMA(closes, period) {
+export function latestEMA(closes, period) {
   const s = emaSeries(closes, period);
   return s[s.length - 1];
 }
 
 // RSI(14) — returns up to `count` values, newest first.
-function calcRSI(closes, period = 14, count = 5) {
+export function calcRSI(closes, period = 14, count = 5) {
   if (closes.length < period + 1) return [];
   let avgGain = 0, avgLoss = 0;
   for (let i = 1; i <= period; i++) {
@@ -117,7 +118,7 @@ function calcRSI(closes, period = 14, count = 5) {
 }
 
 // ATR(14) using Wilder's smoothing — candles must be oldest→newest.
-function calcATR(candles, period = 14) {
+export function calcATR(candles, period = 14) {
   if (candles.length < period + 1) return null;
   const trs = [];
   for (let i = 1; i < candles.length; i++) {
@@ -135,7 +136,7 @@ function calcATR(candles, period = 14) {
 }
 
 // MACD(12,26,9) — returns up to `count` values, newest first.
-function calcMACD(closes, fast = 12, slow = 26, sig = 9, count = 5) {
+export function calcMACD(closes, fast = 12, slow = 26, sig = 9, count = 5) {
   if (closes.length < slow + sig) return [];
   const ema12 = emaSeries(closes, fast);
   const ema26 = emaSeries(closes, slow);
@@ -159,7 +160,7 @@ function calcMACD(closes, fast = 12, slow = 26, sig = 9, count = 5) {
 }
 
 // Bollinger Bands(20,2)
-function calcBBands(closes, period = 20) {
+export function calcBBands(closes, period = 20) {
   if (closes.length < period) return null;
   const slice = closes.slice(-period);
   const mean = slice.reduce((s, v) => s + v, 0) / period;
@@ -217,6 +218,7 @@ export async function fetchMarketData(pair, timeframe) {
     fetchedAt: new Date().toISOString(),
     price:  candles[0] ?? null,
     candles,
+    rawOldest: oldest,  // full 300-candle array oldest→newest, used by backtest.js
     rsi14,
     macd,
     ma50,

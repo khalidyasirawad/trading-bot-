@@ -68,7 +68,7 @@ export function formatPublicSignal(data) {
  * @param {object} data  Full signal object from fetcher
  * @param {string} signalId  Unique signal ID
  */
-export function formatVipSignal(data, signalId) {
+export function formatVipSignal(data, signalId, signalNumber = null) {
   const { pair, dataFreshness, price, indicators, volume, macro, signal, dataWarnings } = data;
 
   const pairEmoji = PAIR_EMOJI[pair] ?? '📊';
@@ -126,8 +126,12 @@ export function formatVipSignal(data, signalId) {
     ? '⚡ <b>SCALP SIGNAL</b>'
     : '⚡ <b>VIP SIGNAL</b>';
 
+  const numTag = signalNumber != null
+    ? `  <b>#${String(signalNumber).padStart(4, '0')}</b>`
+    : '';
+
   return [
-    `${signalTypeTag}  ·  <code>${signalId}</code>`,
+    `${signalTypeTag}${numTag}  ·  <code>${signalId}</code>`,
     '',
     `${pairEmoji} <b>${pair}</b>  |  ${signal.timeframe}  |  ${dirEmoji} <b>${signal.direction}</b>  ${confEmoji} ${signal.confidence}`,
     `<b>Price:</b> <code>${currentPrice}</code>  ${changeStr}${freshnessTag}`,
@@ -191,6 +195,58 @@ export function formatTpHit(storedSignal, tpLevel) {
     '',
     'Still watching from the sidelines? 👇',
     `👉 Get VIP access: ${process.env.PAYMENT_LINK ?? 'Link in bio'}`,
+  ].join('\n');
+}
+
+/**
+ * Format a TP or SL hit announcement for the PUBLIC channel.
+ * Uses the signal record from signalStore.
+ *
+ * @param {object} storedSignal  Signal record from signalStore
+ * @param {'TP1'|'TP2'|'TP3'|'SL'} level
+ */
+export function formatTpHitPublic(storedSignal, level) {
+  const isSl  = level === 'SL';
+  const dec   = storedSignal.pair === 'BTCUSD' ? 0 : 2;
+  const unit  = storedSignal.pair === 'XAUUSD' ? 'pts' : 'USD';
+  const pairEmoji = PAIR_EMOJI[storedSignal.pair] ?? '📊';
+  const dirEmoji  = DIR_EMOJI[storedSignal.direction] ?? '';
+
+  const exitPrice = isSl ? storedSignal.stopLoss : storedSignal[level.toLowerCase()];
+  const pnl = exitPrice != null
+    ? (storedSignal.direction === 'LONG'
+        ? exitPrice - storedSignal.entry
+        : storedSignal.entry - exitPrice)
+    : 0;
+  const pnlStr = `${pnl >= 0 ? '+' : ''}${pnl.toFixed(dec)} ${unit}`;
+
+  const numTag = storedSignal.number != null
+    ? ` · Signal <b>#${String(storedSignal.number).padStart(4, '0')}</b>` : '';
+
+  if (isSl) {
+    return [
+      `❌ <b>SL HIT</b>${numTag}`,
+      `${pairEmoji} ${storedSignal.pair} [${storedSignal.timeframe}]  ${dirEmoji} ${storedSignal.direction}`,
+      '',
+      `Entry <code>${storedSignal.entry?.toFixed(dec)}</code> → SL <code>${exitPrice?.toFixed(dec)}</code>  (<code>${pnlStr}</code>)`,
+      '',
+      `<i>No trade is a loss if risk was managed. We protect capital and wait for the next setup.</i>`,
+    ].join('\n');
+  }
+
+  const tpsHit = [...(storedSignal.tpsHit ?? [])];
+  const progressBar = ['TP1', 'TP2', 'TP3'].map(t => tpsHit.includes(t) ? '✅' : '⬜').join(' ');
+
+  return [
+    `🎯 <b>${level} HIT</b>${numTag}`,
+    `${pairEmoji} ${storedSignal.pair} [${storedSignal.timeframe}]  ${dirEmoji} ${storedSignal.direction}`,
+    '',
+    `VIP members: <b>${pnlStr}</b> on this trade 📈`,
+    `Entry <code>${storedSignal.entry?.toFixed(dec)}</code> → ${level} <code>${exitPrice?.toFixed(dec)}</code>`,
+    `Progress: ${progressBar}`,
+    '',
+    `🔐 Full signals (entry · SL · all TPs) are <b>VIP only</b>`,
+    `👉 ${process.env.PAYMENT_LINK ?? 'Link in bio'}`,
   ].join('\n');
 }
 

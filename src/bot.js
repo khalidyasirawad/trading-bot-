@@ -19,6 +19,7 @@ import { scanAllSignals, scanScalpSignals } from './signals/scanner.js';
 import { applyWatermark } from './signals/antiLeak.js';
 import { generateBacktestPost } from './content/backtestPost.js';
 import { startLiveMonitor } from './signals/liveMonitor.js';
+import { nextNumber, register } from './signals/signalStore.js';
 
 // ─── Validate required env vars ───────────────────────────────────────────────
 const REQUIRED_ENV = [
@@ -104,16 +105,28 @@ bot.command('signal', adminOnly, async (ctx) => {
       );
     }
 
+    const num      = nextNumber();
     const signalId = `sig_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
-    const text = applyWatermark(formatVipSignal(result, signalId), `admin_${signalId}`);
+    const sig      = result.signal;
+    const text = applyWatermark(formatVipSignal(result, signalId, num), `admin_${signalId}`);
 
     await bot.api.sendMessage(process.env.VIP_CHANNEL_ID, text, {
       parse_mode: 'HTML',
       protect_content: true,
     });
 
+    register(signalId, {
+      pair, timeframe: tf,
+      direction:  sig.direction,
+      entry:      sig.entry,
+      stopLoss:   sig.stopLoss,
+      tp1:        sig.takeProfit1,
+      tp2:        sig.takeProfit2,
+      tp3:        sig.takeProfit3,
+    });
+
     await ctx.reply(
-      `✅ <b>${dir}</b> signal posted · <code>${signalId}</code>\nR:R: ${result.signal.riskReward}`,
+      `✅ <b>#${String(num).padStart(4,'0')} ${dir}</b> signal posted · <code>${signalId}</code>\nR:R: ${sig.riskReward}`,
       { parse_mode: 'HTML' }
     );
   } catch (err) {

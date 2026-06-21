@@ -1,149 +1,224 @@
 /**
- * 24/7 live signal monitor — scans all swing pairs every 20 minutes.
+ * 24/7 live signal monitor.
  *
- * HIGH confidence  → posts immediately to VIP channel (auto)
- * MEDIUM confidence → sends suggestion to admin DM for review
+ * Every 20 minutes:
+ *  1. Checks all open signals for TP/SL hits → announces to PUBLIC channel
+ *  2. Scans all 8 swing setups for new signals
+ *     HIGH confidence  → auto-posts to VIP + DMs admin confirmation
+ *     MEDIUM confidence → DMs admin for manual review
  *
- * Rate-limit budget (Twelve Data free tier = 800 credits/day):
- *   8 setups × 3 scans/hour × 24h = 576 credits/day for monitoring
- *   ~15 credits/day for scheduled posts
- *   Total: ~591/day — well within the 800/day limit.
+ * Deduplication: a pair/timeframe/direction combo won't be re-posted while
+ * an existing signal for that combo is still OPEN (not yet hit SL or TP3).
  *
- * Deduplication: same pair+timeframe+direction+entry is silenced for 4 hours
- * to prevent spamming the same setup on every scan cycle.
+ * API budget: 8 credits × 3/hr × 24h = 576 credits/day (limit: 800/day)
  */
 
 import crypto from 'crypto';
 import { scanAllSignals } from './scanner.js';
 import { isActionableSignal } from './fetcher.js';
-import { formatVipSignal } from './formatter.js';
+import { formatVipSignal, formatTpHitPublic } from './formatter.js';
 import { applyWatermark } from './antiLeak.js';
 import { sleep } from './marketData.js';
+import {
+  nextNumber, register, markTpHit,
+  hasOpenSignal, getOpenSignals, pruneStale,
+} from './signalStore.js';
 
-const SCAN_INTERVAL_MS = 20 * 60 * 1000;  // 20 minutes
-const DEDUP_WINDOW_MS  =  4 * 60 * 60 * 1000; // 4 hours
+const SCAN_INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
 
-// In-memory dedup store: signalKey → timestamp last alerted
-const seen = new Map();
+// ─── TP / SL checker ─────────────────────────────────────────────────────────
 
-function signalKey(pair, tf, direction, entry, dec) {
-  const rounded = Number(entry).toFixed(dec);
-  return `${pair}_${tf}_${direction}_${rounded}`;
-}
+/**
+ * Check all open signals against the latest scan rows.
+ * Uses each row's current candle high/low to detect TP/SL crosses.
+ * Posts announcements to the PUBLIC channel when levels are hit.
+ */
+async function checkTpHits(bot, rows) {
+  const openSignals = getOpenSignals();
+  if (openSignals.length === 0) return;
 
-function wasSeen(key) {
-  const ts = seen.get(key);
-  return ts != null && Date.now() - ts < DEDUP_WINDOW_MS;
-}
+  // Build a lookup: pair → current candle high/low from the scan
+  const priceMap = {};
+  for (const row of rows) {
+    if (!row.result?.price) continue;
+    const { current, high, low } = row.result.price;
+    if (!priceMap[row.pair]) {
+      priceMap[row.pair] = { current, high, low };
+    }
+  }
 
-function markSeen(key) {
-  seen.set(key, Date.now());
-  // Prune stale entries
-  for (const [k, ts] of seen) {
-    if (Date.now() - ts > DEDUP_WINDOW_MS) seen.delete(k);
+  for (const sig of openSignals) {
+    const price = priceMap[sig.pair];
+    if (!price) continue;
+
+    const { high, low } = price;
+    const long = sig.direction === 'LONG';
+
+    // Check SL first (conservative)
+    if ((long && low != null && low <= sig.stopLoss) ||
+        (!long && high != null && high >= sig.stopLoss)) {
+      if (markTpHit(sig.signalId, 'SL')) {
+        console.log(`[monitor] Signal #${sig.number} SL hit — ${sig.pair} ${sig.timeframe}`);
+        await postTpAnnouncement(bot, sig, 'SL');
+      }
+      continue; // signal is now closed
+    }
+
+    // Check TPs in order (TP3 first so we don't double-announce)
+    const tpLevels = ['TP3', 'TP2', 'TP1'];
+    for (const level of tpLevels) {
+      const tpPrice = sig[level.toLowerCase()];
+      if (tpPrice == null) continue;
+      if (sig.tpsHit.has(level)) continue; // already announced
+
+      const hit = long ? (high != null && high >= tpPrice) : (low != null && low <= tpPrice);
+      if (hit) {
+        if (markTpHit(sig.signalId, level)) {
+          console.log(`[monitor] Signal #${sig.number} ${level} hit — ${sig.pair} ${sig.timeframe}`);
+          await postTpAnnouncement(bot, sig, level);
+        }
+        break; // announce highest TP hit this cycle; lower ones get caught next cycle
+      }
+    }
   }
 }
 
-// ─── Format admin DM for a MEDIUM signal ─────────────────────────────────────
+async function postTpAnnouncement(bot, sig, level) {
+  const text = formatTpHitPublic(sig, level);
+  try {
+    await bot.api.sendMessage(process.env.PUBLIC_CHANNEL_ID, text, { parse_mode: 'HTML' });
+  } catch (err) {
+    console.error(`[monitor] Failed to post ${level} announcement to public channel: ${err.message}`);
+  }
+}
+
+// ─── Admin MEDIUM alert ───────────────────────────────────────────────────────
 
 function formatMediumAlert(result) {
   const { pair, signal, indicators } = result;
-  const dec  = pair === 'BTCUSD' ? 0 : 2;
+  const dec = pair === 'BTCUSD' ? 0 : 2;
   const pairEmoji = pair === 'XAUUSD' ? '🥇' : '₿';
   const dirEmoji  = signal.direction === 'LONG' ? '🟢' : '🔴';
-
-  const factorCount = signal.missingFactors?.length
-    ? 4 - signal.missingFactors.length
-    : '3';
-
+  const factorCount = signal.missingFactors?.length ? 4 - signal.missingFactors.length : 3;
   const missing = signal.missingFactors?.length
-    ? `\n⚠️ <b>Missing:</b> <i>${signal.missingFactors.join(', ')}</i>`
-    : '';
-
+    ? `\n⚠️ <b>Missing:</b> <i>${signal.missingFactors.join(', ')}</i>` : '';
   const f = (v, d = dec) => v != null ? Number(v).toFixed(d) : 'N/A';
 
   return [
     `⚡ <b>MEDIUM SIGNAL — Your Review Needed</b>`,
     '',
-    `${pairEmoji} <b>${pair}</b> · ${signal.timeframe}  ${dirEmoji} <b>${signal.direction}</b>`,
-    `${factorCount}/4 factors aligned`,
+    `${pairEmoji} <b>${pair}</b> · ${signal.timeframe}  ${dirEmoji} <b>${signal.direction}</b>  (${factorCount}/4 factors)`,
     '',
     `📥 Entry:  <code>${f(signal.entry)}</code>`,
     `🛑 Stop:   <code>${f(signal.stopLoss)}</code>`,
     `🎯 TP1: <code>${f(signal.takeProfit1)}</code>  TP2: <code>${f(signal.takeProfit2)}</code>  TP3: <code>${f(signal.takeProfit3)}</code>`,
     `⚖️ R:R: ${signal.riskReward}`,
     '',
-    `RSI: <code>${f(indicators?.rsi14?.value, 1)}</code>  MACD hist: <code>${f(indicators?.macd?.histogram, 3)}</code>`,
+    `RSI: <code>${f(indicators?.rsi14?.value, 1)}</code>  MACD: <code>${f(indicators?.macd?.histogram, 3)}</code>`,
     `EMA50: <code>${f(indicators?.ma50?.value)}</code> ${indicators?.ma50?.relation ?? ''}  EMA200: <code>${f(indicators?.ma200?.value)}</code> ${indicators?.ma200?.relation ?? ''}`,
     missing,
     '',
     `<i>${signal.reasoning}</i>`,
     '',
-    `▶️ To post to VIP: <code>/signal ${pair} ${signal.timeframe} force</code>`,
-    `▶️ To ignore: just skip this message`,
+    `▶️ Post to VIP: <code>/signal ${pair} ${signal.timeframe} force</code>`,
   ].filter(l => l !== undefined).join('\n').replace(/\n{3,}/g, '\n\n');
 }
 
-// ─── One scan cycle ───────────────────────────────────────────────────────────
+// ─── New signal posting ───────────────────────────────────────────────────────
+
+async function handleHighSignal(bot, pair, timeframe, result) {
+  const num      = nextNumber();
+  const signalId = `sig_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+  const sig      = result.signal;
+  const dec      = pair === 'BTCUSD' ? 0 : 2;
+
+  const text = applyWatermark(
+    formatVipSignal(result, signalId, num),
+    `monitor_${signalId}`
+  );
+
+  try {
+    await bot.api.sendMessage(process.env.VIP_CHANNEL_ID, text, {
+      parse_mode: 'HTML',
+      protect_content: true,
+    });
+
+    // Register in store AFTER successful post
+    register(signalId, {
+      pair, timeframe,
+      direction:  sig.direction,
+      entry:      sig.entry,
+      stopLoss:   sig.stopLoss,
+      tp1:        sig.takeProfit1,
+      tp2:        sig.takeProfit2,
+      tp3:        sig.takeProfit3,
+    });
+
+    console.log(`[monitor] HIGH #${num} posted → VIP: ${pair} ${timeframe} ${sig.direction} (${signalId})`);
+  } catch (err) {
+    console.error(`[monitor] Failed to post HIGH to VIP channel (${process.env.VIP_CHANNEL_ID}): ${err.message}`);
+  }
+
+  // Notify admin regardless
+  try {
+    await bot.api.sendMessage(
+      process.env.ADMIN_TELEGRAM_ID,
+      `🔥 <b>HIGH signal #${String(num).padStart(4,'0')} AUTO-POSTED to VIP</b>\n` +
+      `${pair} ${timeframe} · ${sig.direction}\n` +
+      `Entry: <code>${Number(sig.entry).toFixed(dec)}</code> | ID: <code>${signalId}</code>`,
+      { parse_mode: 'HTML' }
+    );
+  } catch (err) {
+    console.error(`[monitor] Failed to notify admin: ${err.message}`);
+  }
+}
+
+async function handleMediumSignal(bot, result) {
+  try {
+    await bot.api.sendMessage(
+      process.env.ADMIN_TELEGRAM_ID,
+      formatMediumAlert(result),
+      { parse_mode: 'HTML' }
+    );
+    const sig = result.signal;
+    console.log(`[monitor] MEDIUM → admin DM: ${result.pair} ${sig.timeframe} ${sig.direction}`);
+  } catch (err) {
+    console.error(`[monitor] Failed to DM admin (ID: ${process.env.ADMIN_TELEGRAM_ID}): ${err.message}`);
+  }
+}
+
+// ─── Main scan cycle ──────────────────────────────────────────────────────────
 
 async function runOneCycle(bot) {
+  pruneStale();
+
   console.log('[monitor] Scanning swing setups…');
   const rows = await scanAllSignals();
 
+  // 1. Check open signals for TP/SL hits first
+  await checkTpHits(bot, rows);
+
+  // 2. Look for new signals
   for (const row of rows) {
     if (!row.result) continue;
-
     const { pair, timeframe, result } = row;
     const sig = result.signal;
 
     if (sig.direction === 'WAIT') continue;
 
-    const dec = pair === 'BTCUSD' ? 0 : 2;
-    const key = signalKey(pair, timeframe, sig.direction, sig.entry, dec);
-
-    if (wasSeen(key)) continue;
-    markSeen(key);
-
-    if (sig.confidence === 'HIGH') {
-      // Auto-post to VIP channel
-      const signalId = `sig_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
-      const text = applyWatermark(formatVipSignal(result, signalId), `monitor_${signalId}`);
-
-      try {
-        await bot.api.sendMessage(process.env.VIP_CHANNEL_ID, text, {
-          parse_mode: 'HTML',
-          protect_content: true,
-        });
-        console.log(`[monitor] HIGH signal posted → VIP: ${pair} ${timeframe} ${sig.direction} (${signalId})`);
-      } catch (err) {
-        console.error(`[monitor] Failed to post HIGH signal to VIP channel (${process.env.VIP_CHANNEL_ID}): ${err.message}`);
-      }
-
-      // Notify admin regardless of VIP post success
-      try {
-        await bot.api.sendMessage(
-          process.env.ADMIN_TELEGRAM_ID,
-          `🔥 <b>HIGH signal AUTO-POSTED to VIP</b>\n${pair} ${timeframe} · ${sig.direction}\nEntry: <code>${Number(sig.entry).toFixed(dec)}</code> | <code>${signalId}</code>`,
-          { parse_mode: 'HTML' }
-        );
-      } catch (err) {
-        console.error(`[monitor] Failed to notify admin (ID: ${process.env.ADMIN_TELEGRAM_ID}): ${err.message}`);
-      }
-
-    } else if (sig.confidence === 'MEDIUM') {
-      try {
-        await bot.api.sendMessage(
-          process.env.ADMIN_TELEGRAM_ID,
-          formatMediumAlert(result),
-          { parse_mode: 'HTML' }
-        );
-        console.log(`[monitor] MEDIUM signal → admin DM: ${pair} ${timeframe} ${sig.direction}`);
-      } catch (err) {
-        console.error(`[monitor] Failed to DM admin (ID: ${process.env.ADMIN_TELEGRAM_ID}): ${err.message}`);
-      }
+    // Skip if we already have an open signal for this combo
+    if (hasOpenSignal(pair, timeframe, sig.direction)) {
+      console.log(`[monitor] Skipping ${pair} ${timeframe} ${sig.direction} — signal already open`);
+      continue;
     }
 
-    await sleep(500); // small gap between Telegram sends
+    if (sig.confidence === 'HIGH') {
+      await handleHighSignal(bot, pair, timeframe, result);
+    } else if (sig.confidence === 'MEDIUM') {
+      await handleMediumSignal(bot, result);
+    }
+
+    await sleep(500);
   }
 }
 
@@ -151,14 +226,11 @@ async function runOneCycle(bot) {
 
 /**
  * Start the 24/7 live signal monitor.
- * Runs immediately on start, then every 20 minutes.
- *
  * @param {import('grammy').Bot} bot
  * @returns {{ stop: () => void }}
  */
 export function startLiveMonitor(bot) {
-  console.log('[monitor] 24/7 live monitor started — scanning every 20 min (HIGH → VIP auto-post, MEDIUM → admin DM)');
-
+  console.log('[monitor] 24/7 live monitor started — scanning every 20 min');
   let stopped = false;
 
   const loop = async () => {
@@ -166,15 +238,12 @@ export function startLiveMonitor(bot) {
       try {
         await runOneCycle(bot);
       } catch (err) {
-        console.error('[monitor] Scan error:', err.message);
+        console.error('[monitor] Cycle error:', err.message);
       }
       if (!stopped) await sleep(SCAN_INTERVAL_MS);
     }
   };
 
-  loop(); // fire immediately, don't await (runs in background)
-
-  return {
-    stop: () => { stopped = true; },
-  };
+  loop();
+  return { stop: () => { stopped = true; } };
 }

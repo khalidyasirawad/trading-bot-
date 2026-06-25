@@ -244,10 +244,60 @@ bot.catch((err) => console.error('[bot] Unhandled error:', err.message));
 
 // ─── Express (health check + Railway port binding) ────────────────────────────
 const app = express();
+app.use(express.json());
+
+// CORS — required for MT4 WebRequest and any external clients
+app.use((_req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  next();
+});
 
 app.get('/health', (_req, res) =>
   res.json({ status: 'ok', uptime: Math.round(process.uptime()) })
 );
+
+// ─── BTC Signal webhook (MT4 EA polls this) ──────────────────────────────────
+
+// Latest BTC signal stored in memory
+let latestBtcSignal = {
+  signal_id:    'init_' + Date.now(),
+  direction:    'WAIT',
+  confidence:   'LOW',
+  entry:        null,
+  stopLoss:     null,
+  takeProfit1:  null,
+  takeProfit2:  null,
+  takeProfit3:  null,
+  postedAt:     new Date().toISOString(),
+};
+
+// POST /btc-signal — Telegram bot or admin pushes new signal here
+app.post('/btc-signal', (req, res) => {
+  const body = req.body;
+  if (!body || !body.direction) {
+    return res.status(400).json({ error: 'Missing direction field' });
+  }
+  latestBtcSignal = {
+    signal_id:   `sig_${Date.now()}`,
+    direction:   body.direction   ?? 'WAIT',
+    confidence:  body.confidence  ?? 'LOW',
+    entry:       body.entry       ?? null,
+    stopLoss:    body.stopLoss    ?? null,
+    takeProfit1: body.takeProfit1 ?? null,
+    takeProfit2: body.takeProfit2 ?? null,
+    takeProfit3: body.takeProfit3 ?? null,
+    postedAt:    new Date().toISOString(),
+  };
+  console.log(`[webhook] BTC signal stored: ${latestBtcSignal.direction} ${latestBtcSignal.confidence} (${latestBtcSignal.signal_id})`);
+  res.json({ ok: true, signal_id: latestBtcSignal.signal_id });
+});
+
+// GET /btc-signal — MT4 EA polls this every 10 seconds
+app.get('/btc-signal', (_req, res) => {
+  res.json(latestBtcSignal);
+});
 
 const PORT = parseInt(process.env.PORT ?? '3000', 10);
 app.listen(PORT, () => console.log(`[http] Listening on port ${PORT}`));

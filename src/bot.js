@@ -20,6 +20,7 @@ import { applyWatermark } from './signals/antiLeak.js';
 import { generateBacktestPost } from './content/backtestPost.js';
 import { startLiveMonitor } from './signals/liveMonitor.js';
 import { nextNumber, register } from './signals/signalStore.js';
+import { getSignal, getAllSignals } from './signals/latestSignals.js';
 
 // ─── Validate required env vars ───────────────────────────────────────────────
 const REQUIRED_ENV = [
@@ -258,45 +259,23 @@ app.get('/health', (_req, res) =>
   res.json({ status: 'ok', uptime: Math.round(process.uptime()) })
 );
 
-// ─── BTC Signal webhook (MT4 EA polls this) ──────────────────────────────────
+// ─── Signal endpoints — MT4 EA polls these ───────────────────────────────────
+// GET /signal/:pair        — EA polls e.g. /signal/EURUSD
+// GET /signals             — all active signals (dashboard / debug)
+// GET /btc-signal          — legacy alias kept for backward compat
 
-// Latest BTC signal stored in memory
-let latestBtcSignal = {
-  signal_id:    'init_' + Date.now(),
-  direction:    'WAIT',
-  confidence:   'LOW',
-  entry:        null,
-  stopLoss:     null,
-  takeProfit1:  null,
-  takeProfit2:  null,
-  takeProfit3:  null,
-  postedAt:     new Date().toISOString(),
-};
-
-// POST /btc-signal — Telegram bot or admin pushes new signal here
-app.post('/btc-signal', (req, res) => {
-  const body = req.body;
-  if (!body || !body.direction) {
-    return res.status(400).json({ error: 'Missing direction field' });
-  }
-  latestBtcSignal = {
-    signal_id:   `sig_${Date.now()}`,
-    direction:   body.direction   ?? 'WAIT',
-    confidence:  body.confidence  ?? 'LOW',
-    entry:       body.entry       ?? null,
-    stopLoss:    body.stopLoss    ?? null,
-    takeProfit1: body.takeProfit1 ?? null,
-    takeProfit2: body.takeProfit2 ?? null,
-    takeProfit3: body.takeProfit3 ?? null,
-    postedAt:    new Date().toISOString(),
-  };
-  console.log(`[webhook] BTC signal stored: ${latestBtcSignal.direction} ${latestBtcSignal.confidence} (${latestBtcSignal.signal_id})`);
-  res.json({ ok: true, signal_id: latestBtcSignal.signal_id });
+app.get('/signal/:pair', (req, res) => {
+  const pair = req.params.pair.toUpperCase();
+  res.json(getSignal(pair));
 });
 
-// GET /btc-signal — MT4 EA polls this every 10 seconds
+app.get('/signals', (_req, res) => {
+  res.json(getAllSignals());
+});
+
+// Legacy alias — redirect old BTC EA to the new unified endpoint
 app.get('/btc-signal', (_req, res) => {
-  res.json(latestBtcSignal);
+  res.json(getSignal('BTCUSD'));
 });
 
 const PORT = parseInt(process.env.PORT ?? '3000', 10);

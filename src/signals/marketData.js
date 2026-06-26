@@ -13,7 +13,15 @@
 
 const BASE_URL = 'https://api.twelvedata.com';
 
-const SYMBOL_MAP = { XAUUSD: 'XAU/USD', BTCUSD: 'BTC/USD' };
+const SYMBOL_MAP = {
+  XAUUSD: 'XAU/USD',
+  BTCUSD: 'BTC/USD',
+  EURUSD: 'EUR/USD',
+  GBPUSD: 'GBP/USD',
+  USDJPY: 'USD/JPY',
+  USDCHF: 'USD/CHF',
+  AUDUSD: 'AUD/USD',
+};
 const TF_MAP = {
   M1: '1min', M5: '5min', M10: '5min',
   M15: '15min', H1: '1h', H4: '4h', D1: '1day',

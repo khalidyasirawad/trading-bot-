@@ -18,7 +18,15 @@
  */
 
 const SCALP_TFS = new Set(['M1', 'M5', 'M10']);
-const PAIR_DEC  = { XAUUSD: 2, BTCUSD: 0 };
+export const PAIR_DEC = {
+  XAUUSD: 2,
+  BTCUSD: 0,
+  EURUSD: 5,
+  GBPUSD: 5,
+  USDJPY: 3,
+  USDCHF: 5,
+  AUDUSD: 5,
+};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

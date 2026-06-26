@@ -1,30 +1,34 @@
 /**
  * 24/7 live signal monitor.
  *
- * Every 20 minutes:
+ * Every 45 minutes:
  *  1. Checks all open signals for TP/SL hits → announces to PUBLIC channel
- *  2. Scans all 8 swing setups for new signals
- *     HIGH confidence  → auto-posts to VIP + DMs admin confirmation
- *     MEDIUM confidence → DMs admin for manual review
+ *  2. Scans 23 setups across all pairs:
+ *       XAUUSD + BTCUSD × M15/H1/H4/D1 (8 setups)
+ *       EURUSD/GBPUSD/USDJPY/USDCHF/AUDUSD × H1/H4/D1 (15 setups)
+ *     HIGH confidence  → auto-posts to VIP + stores in signal cache for MT4 EA
+ *     MEDIUM confidence → DMs admin for manual review + stores in signal cache
  *
  * Deduplication: a pair/timeframe/direction combo won't be re-posted while
  * an existing signal for that combo is still OPEN (not yet hit SL or TP3).
  *
- * API budget: 8 credits × 3/hr × 24h = 576 credits/day (limit: 800/day)
+ * API budget: 23 credits × 32 scans/day = 736 credits/day (limit: 800/day)
  */
 
 import crypto from 'crypto';
-import { scanAllSignals } from './scanner.js';
+import { scanAllPairs } from './scanner.js';
 import { isActionableSignal } from './fetcher.js';
 import { formatVipSignal, formatTpHitPublic } from './formatter.js';
 import { applyWatermark } from './antiLeak.js';
 import { sleep } from './marketData.js';
+import { PAIR_DEC } from './engine.js';
+import { updateSignal } from './latestSignals.js';
 import {
   nextNumber, register, markTpHit,
   hasOpenSignal, getOpenSignals, pruneStale,
 } from './signalStore.js';
 
-const SCAN_INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
+const SCAN_INTERVAL_MS = 45 * 60 * 1000; // 45 minutes
 
 // ─── TP / SL checker ─────────────────────────────────────────────────────────
 
@@ -96,8 +100,8 @@ async function postTpAnnouncement(bot, sig, level) {
 
 function formatMediumAlert(result) {
   const { pair, signal, indicators } = result;
-  const dec = pair === 'BTCUSD' ? 0 : 2;
-  const pairEmoji = pair === 'XAUUSD' ? '🥇' : '₿';
+  const dec = PAIR_DEC[pair] ?? 5;
+  const pairEmoji = pair === 'XAUUSD' ? '🥇' : pair === 'BTCUSD' ? '₿' : '💱';
   const dirEmoji  = signal.direction === 'LONG' ? '🟢' : '🔴';
   const factorCount = signal.missingFactors?.length ? 4 - signal.missingFactors.length : 3;
   const missing = signal.missingFactors?.length
@@ -130,7 +134,18 @@ async function handleHighSignal(bot, pair, timeframe, result) {
   const num      = nextNumber();
   const signalId = `sig_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
   const sig      = result.signal;
-  const dec      = pair === 'BTCUSD' ? 0 : 2;
+  const dec      = PAIR_DEC[pair] ?? 5;
+
+  // Push to signal cache so MT4 EA can poll it immediately
+  updateSignal(pair, {
+    direction:   sig.direction,
+    confidence:  sig.confidence,
+    entry:       sig.entry,
+    stopLoss:    sig.stopLoss,
+    takeProfit1: sig.takeProfit1,
+    takeProfit2: sig.takeProfit2,
+    takeProfit3: sig.takeProfit3,
+  });
 
   const text = applyWatermark(
     formatVipSignal(result, signalId, num),
@@ -174,13 +189,25 @@ async function handleHighSignal(bot, pair, timeframe, result) {
 }
 
 async function handleMediumSignal(bot, result) {
+  const sig = result.signal;
+
+  // Push to signal cache so MT4 EA can act on MEDIUM signals too
+  updateSignal(result.pair, {
+    direction:   sig.direction,
+    confidence:  sig.confidence,
+    entry:       sig.entry,
+    stopLoss:    sig.stopLoss,
+    takeProfit1: sig.takeProfit1,
+    takeProfit2: sig.takeProfit2,
+    takeProfit3: sig.takeProfit3,
+  });
+
   try {
     await bot.api.sendMessage(
       process.env.ADMIN_TELEGRAM_ID,
       formatMediumAlert(result),
       { parse_mode: 'HTML' }
     );
-    const sig = result.signal;
     console.log(`[monitor] MEDIUM → admin DM: ${result.pair} ${sig.timeframe} ${sig.direction}`);
   } catch (err) {
     console.error(`[monitor] Failed to DM admin (ID: ${process.env.ADMIN_TELEGRAM_ID}): ${err.message}`);
@@ -192,8 +219,8 @@ async function handleMediumSignal(bot, result) {
 async function runOneCycle(bot) {
   pruneStale();
 
-  console.log('[monitor] Scanning swing setups…');
-  const rows = await scanAllSignals();
+  console.log('[monitor] Scanning all pairs (XAUUSD/BTCUSD/EURUSD/GBPUSD/USDJPY/USDCHF/AUDUSD)…');
+  const rows = await scanAllPairs();
 
   // 1. Check open signals for TP/SL hits first
   await checkTpHits(bot, rows);
@@ -230,7 +257,7 @@ async function runOneCycle(bot) {
  * @returns {{ stop: () => void }}
  */
 export function startLiveMonitor(bot) {
-  console.log('[monitor] 24/7 live monitor started — scanning every 20 min');
+  console.log('[monitor] 24/7 live monitor started — scanning every 45 min (XAUUSD/BTCUSD/EURUSD/GBPUSD/USDJPY/USDCHF/AUDUSD)');
   let stopped = false;
 
   const loop = async () => {

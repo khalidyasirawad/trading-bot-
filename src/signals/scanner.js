@@ -33,7 +33,9 @@ import { fetchSignalFromData, SCALP_TFS, SWING_TFS } from './fetcher.js';
 
 export const SWING_TIMEFRAMES = [...SWING_TFS]; // ['M15','H1','H4','D1']
 export const SCALP_TIMEFRAMES = [...SCALP_TFS]; // ['M1','M5','M10']
-const PAIRS = ['XAUUSD', 'BTCUSD'];
+const PAIRS       = ['XAUUSD', 'BTCUSD'];
+const FOREX_PAIRS = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'AUDUSD'];
+const FOREX_TFS   = ['H1', 'H4', 'D1'];
 
 // Gap between sequential market data fetches.
 // Each setup now uses exactly 1 API credit (all indicators calculated locally).
@@ -82,13 +84,9 @@ export function scoreSignal(result) {
  * @param {string[]} timeframes
  * @returns {Promise<Array<{pair, timeframe, result, score, error}>>}  Sorted best-first
  */
-async function runScan(pairs, timeframes) {
-  const tasks = [];
-  for (const pair of pairs) {
-    for (const tf of timeframes) {
-      tasks.push({ pair, timeframe: tf });
-    }
-  }
+async function runScan(pairs, timeframes, customTasks = null) {
+  const tasks = customTasks
+    ?? pairs.flatMap(p => timeframes.map(tf => ({ pair: p, timeframe: tf })));
 
   // ── Step 1: sequential market data fetch ──────────────────────────────────
   console.log(`[scanner] Pre-fetching market data for ${tasks.length} setups (sequential)…`);
@@ -145,4 +143,19 @@ export async function scanAllSignals() {
  */
 export async function scanScalpSignals() {
   return runScan(PAIRS, SCALP_TIMEFRAMES);
+}
+
+/**
+ * Scan all pairs for the 24/7 live monitor:
+ *   XAUUSD + BTCUSD × M15/H1/H4/D1  (8 setups)
+ *   EURUSD + GBPUSD + USDJPY + USDCHF + AUDUSD × H1/H4/D1  (15 setups)
+ *   Total: 23 setups — at 45-min interval ≈ 736 credits/day (limit 800/day)
+ * @returns {Promise<Array>}
+ */
+export async function scanAllPairs() {
+  const tasks = [
+    ...PAIRS.flatMap(p => SWING_TIMEFRAMES.map(tf => ({ pair: p, timeframe: tf }))),
+    ...FOREX_PAIRS.flatMap(p => FOREX_TFS.map(tf => ({ pair: p, timeframe: tf }))),
+  ];
+  return runScan(null, null, tasks);
 }
